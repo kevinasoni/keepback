@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Inactivity Settings</title>
+</head>
+<body>
+
+<h2>Select Inactivity Hours</h2>
+
+<select id="hours">
+  <script>
+    for (let i = 1; i <= 168; i++) {
+      document.write(`<option value="${i}">${i} Hours</option>`);
+    }
+  </script>
+</select>
+
+<button onclick="setInactivity()">Save</button>
+
+<script src="app.js"></script>
+
+</body>
+</html>
