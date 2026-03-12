@@ -19,12 +19,10 @@ const DATA_SECRET = process.env.DATA_SECRET || 'secret';
 
 /* ================= CORS ================= */
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || '*',
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*',
+  credentials: true,
+}));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -34,12 +32,10 @@ app.use(express.urlencoded({ extended: true }));
 
 async function connectDB() {
   if (mongoose.connection.readyState === 1) return;
-
   if (!process.env.MONGO_URI) {
-    console.error('❌ MONGO_URI missing from environment variables');
+    console.error('❌ MONGO_URI missing');
     process.exit(1);
   }
-
   try {
     await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ MongoDB connected');
@@ -49,7 +45,7 @@ async function connectDB() {
   }
 }
 
-connectDB(); // connect once on startup
+connectDB();
 
 
 /* ================= MULTER ================= */
@@ -66,22 +62,16 @@ const userSchema = new mongoose.Schema({
   passwordHash: String,
   createdAt: { type: Date, default: Date.now }
 });
-
-const User =
-  mongoose.models.User ||
-  mongoose.model('User', userSchema);
-
+const User = mongoose.models.User || mongoose.model('User', userSchema);
 
 const beneficiarySchema = new mongoose.Schema({
   userId: mongoose.Schema.Types.ObjectId,
   name: String,
+  relation: String,
+  contact: String,
   email: String
 });
-
-const Beneficiary =
-  mongoose.models.Beneficiary ||
-  mongoose.model('Beneficiary', beneficiarySchema);
-
+const Beneficiary = mongoose.models.Beneficiary || mongoose.model('Beneficiary', beneficiarySchema);
 
 const medicalSchema = new mongoose.Schema({
   userId: mongoose.Schema.Types.ObjectId,
@@ -89,30 +79,28 @@ const medicalSchema = new mongoose.Schema({
   prescriptions: String,
   medicalReport: String
 });
-
-const MedicalInfo =
-  mongoose.models.MedicalInfo ||
-  mongoose.model('MedicalInfo', medicalSchema);
-
+const MedicalInfo = mongoose.models.MedicalInfo || mongoose.model('MedicalInfo', medicalSchema);
 
 const privateSchema = new mongoose.Schema({
-  userId: mongoose.Schema.Types.ObjectId,
+  userId: { type: mongoose.Schema.Types.ObjectId, unique: true },
   encryptedData: String
 });
+const UserPrivateData = mongoose.models.UserPrivateData || mongoose.model('UserPrivateData', privateSchema);
 
-const UserPrivateData =
-  mongoose.models.UserPrivateData ||
-  mongoose.model('UserPrivateData', privateSchema);
+const inactivitySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, unique: true },
+  inactivityDays: { type: Number, default: 30 },
+  lastSeen: { type: Date, default: Date.now },
+  emailSent: { type: Boolean, default: false }
+});
+const InactivitySetting = mongoose.models.InactivitySetting || mongoose.model('InactivitySetting', inactivitySchema);
 
 
 /* ================= AUTH MIDDLEWARE ================= */
 
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
-
-  if (!token)
-    return res.status(401).json({ error: 'No token provided' });
-
+  if (!token) return res.status(401).json({ error: 'No token provided' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = { id: decoded.id };
@@ -139,20 +127,13 @@ const transporter = nodemailer.createTransport({
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
-
     if (!name || !email || !password)
       return res.status(400).json({ error: 'All fields are required' });
-
     const existing = await User.findOne({ email });
-    if (existing)
-      return res.status(409).json({ error: 'Email already registered' });
-
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
     const hash = await bcrypt.hash(password, 10);
-
     await new User({ name, email, passwordHash: hash }).save();
-
     res.json({ message: 'Registered successfully' });
-
   } catch (err) {
     console.error('Register error:', err.message);
     res.status(500).json({ error: 'Registration failed' });
@@ -163,109 +144,182 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
     if (!email || !password)
       return res.status(400).json({ error: 'Email and password required' });
-
     const user = await User.findOne({ email });
-    if (!user)
-      return res.status(401).json({ error: 'Invalid email or password' });
-
+    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok)
-      return res.status(401).json({ error: 'Invalid email or password' });
-
+    if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '1d' });
 
-    res.json({ token });
+    // ✅ Update lastSeen — resets inactivity timer on every login
+    await InactivitySetting.findOneAndUpdate(
+      { userId: user._id },
+      { lastSeen: new Date(), emailSent: false },
+      { upsert: true }
+    );
 
+    res.json({ token });
   } catch (err) {
     console.error('Login error:', err.message);
     res.status(500).json({ error: 'Login failed' });
   }
 });
 
+
+// ✅ Get user profile
+app.get('/api/auth/profile', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-passwordHash');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+
+// ✅ Update user profile name
+app.put('/api/auth/profile', authMiddleware, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    await User.findByIdAndUpdate(req.user.id, { name });
+    res.json({ message: 'Profile updated' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+
+// ✅ Change password
+app.put('/api/auth/change-password', authMiddleware, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ error: 'Both passwords required' });
+    const user = await User.findById(req.user.id);
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hash = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(req.user.id, { passwordHash: hash });
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+
+// ✅ Delete account
+app.delete('/api/auth/delete-account', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await Promise.all([
+      User.findByIdAndDelete(userId),
+      Beneficiary.deleteMany({ userId }),
+      MedicalInfo.deleteMany({ userId }),
+      UserPrivateData.deleteOne({ userId }),
+      InactivitySetting.deleteOne({ userId }),
+    ]);
+    res.json({ message: 'Account deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete account' });
+  }
+});
+
+
 /* ================= DASHBOARD SUMMARY ================= */
 
 app.get('/api/dashboard/summary', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
-
-    const [
-      medicalInfoCount,
-      beneficiariesCount,
-      privateData
-    ] = await Promise.all([
+    const [medicalInfoCount, beneficiariesCount, privateData] = await Promise.all([
       MedicalInfo.countDocuments({ userId }),
       Beneficiary.countDocuments({ userId }),
       UserPrivateData.findOne({ userId })
     ]);
-
-    // Decrypt private data to extract counts
     let parsed = {};
     if (privateData?.encryptedData) {
       try {
         const decrypted = CryptoJS.AES.decrypt(privateData.encryptedData, DATA_SECRET);
         parsed = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
-      } catch {
-        parsed = {};
-      }
+      } catch { parsed = {}; }
     }
-
     res.json({
       medicalInfoCount,
       beneficiariesCount,
-      bankAccountsCount:              parsed.bankAccounts?.length             || 0,
-      insuranceTypes:                 parsed.insurance?.length                || 0,
-      personalDocsCount:              parsed.personalDocs?.length             || 0,
-      investmentsSummary:             parsed.investments?.length              ? `${parsed.investments.length} Investments` : 'No Data',
-      propertyCount:                  parsed.propertyInfo?.length             || 0,
-      childrenPlansCount:             parsed.childrenPlans?.length            || 0,
-      taxDetailsSummary:              parsed.taxDetails                       ? 'Available' : 'No Data',
-      rationCardMembers:              parsed.rationCard?.members?.length      || 0,
-      cibilScoreStatus:               parsed.cibilScore                       ? `Score: ${parsed.cibilScore}` : 'Unavailable',
-      consolidatedPortfolioSummary:   parsed.consolidatedPortfolio            ? 'Available' : 'No Data',
+      bankAccountsCount:            parsed.bankAccounts?.length          || 0,
+      insuranceTypes:               parsed.insurance?.length             || 0,
+      personalDocsCount:            parsed.personalDocs?.length          || 0,
+      investmentsSummary:           parsed.investments?.length           ? `${parsed.investments.length} Investments` : 'No Data',
+      propertyCount:                parsed.propertyInfo?.length          || 0,
+      childrenPlansCount:           parsed.childrenPlans?.length         || 0,
+      taxDetailsSummary:            parsed.taxDetails?.length            ? 'Available' : 'No Data',
+      rationCardMembers:            parsed.rationCard?.familyMembers     || 0,
+      cibilScoreStatus:             parsed.cibilScore?.score             ? `Score: ${parsed.cibilScore.score}` : 'Unavailable',
+      consolidatedPortfolioSummary: parsed.consolidatedPortfolio         ? 'Available' : 'No Data',
     });
-
   } catch (err) {
     console.error('Dashboard summary error:', err.message);
     res.status(500).json({ error: 'Failed to load dashboard summary' });
   }
 });
 
+
 /* ================= MEDICAL ROUTES ================= */
 
-app.post(
-  '/api/medical-info',
-  authMiddleware,
-  upload.single('file'),
-  async (req, res) => {
-    try {
-      const record = new MedicalInfo({
-        userId: req.user.id,
-        doctorName: req.body.doctorName,
-        prescriptions: req.body.prescriptions,
-        medicalReport: req.file?.originalname || null
-      });
-
-      await record.save();
-      res.json(record);
-
-    } catch (err) {
-      console.error('Medical save error:', err.message);
-      res.status(500).json({ error: 'Failed to save medical info' });
-    }
+app.post('/api/medical-info', authMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    const record = new MedicalInfo({
+      userId: req.user.id,
+      doctorName: req.body.doctorName,
+      prescriptions: req.body.prescriptions,
+      medicalReport: req.file?.originalname || null
+    });
+    await record.save();
+    res.json(record);
+  } catch (err) {
+    console.error('Medical save error:', err.message);
+    res.status(500).json({ error: 'Failed to save medical info' });
   }
-);
-
+});
 
 app.get('/api/medical-info', authMiddleware, async (req, res) => {
   try {
     const data = await MedicalInfo.find({ userId: req.user.id });
     res.json(data);
   } catch (err) {
-    console.error('Medical fetch error:', err.message);
     res.status(500).json({ error: 'Failed to fetch medical info' });
+  }
+});
+
+// ✅ Update medical record
+app.put('/api/medical-info/:id', authMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    const update = {
+      doctorName: req.body.doctorName,
+      prescriptions: req.body.prescriptions,
+    };
+    if (req.file) update.medicalReport = req.file.originalname;
+    const updated = await MedicalInfo.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      update,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Record not found' });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update medical info' });
+  }
+});
+
+// ✅ Delete medical record
+app.delete('/api/medical-info/:id', authMiddleware, async (req, res) => {
+  try {
+    await MedicalInfo.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete medical info' });
   }
 });
 
@@ -274,39 +328,70 @@ app.get('/api/medical-info', authMiddleware, async (req, res) => {
 
 app.post('/api/beneficiaries', authMiddleware, async (req, res) => {
   try {
-    const { name, email } = req.body;
-
-    if (!name || !email)
-      return res.status(400).json({ error: 'Name and email are required' });
-
-    await new Beneficiary({ userId: req.user.id, name, email }).save();
-
+    const { name, relation, contact, email } = req.body;
+    if (!name || !relation || !contact)
+      return res.status(400).json({ error: 'Name, relation and contact are required' });
+    await new Beneficiary({ userId: req.user.id, name, relation, contact, email }).save();
     res.json({ ok: true });
-
   } catch (err) {
-    console.error('Beneficiary save error:', err.message);
     res.status(500).json({ error: 'Failed to save beneficiary' });
   }
 });
-
 
 app.get('/api/beneficiaries', authMiddleware, async (req, res) => {
   try {
     const list = await Beneficiary.find({ userId: req.user.id });
     res.json(list);
   } catch (err) {
-    console.error('Beneficiary fetch error:', err.message);
     res.status(500).json({ error: 'Failed to fetch beneficiaries' });
+  }
+});
+
+app.put('/api/beneficiaries/:id', authMiddleware, async (req, res) => {
+  try {
+    const { name, relation, contact, email } = req.body;
+    const updated = await Beneficiary.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { name, relation, contact, email },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Not found' });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update beneficiary' });
+  }
+});
+
+app.delete('/api/beneficiaries/:id', authMiddleware, async (req, res) => {
+  try {
+    await Beneficiary.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete beneficiary' });
   }
 });
 
 
 /* ================= USER PRIVATE DATA ================= */
 
+// ✅ Save — merges with existing data so pages don't overwrite each other
 app.post('/api/user-data', authMiddleware, async (req, res) => {
   try {
+    // Get existing data first
+    const existing = await UserPrivateData.findOne({ userId: req.user.id });
+    let existingParsed = {};
+    if (existing?.encryptedData) {
+      try {
+        const dec = CryptoJS.AES.decrypt(existing.encryptedData, DATA_SECRET);
+        existingParsed = JSON.parse(dec.toString(CryptoJS.enc.Utf8));
+      } catch { existingParsed = {}; }
+    }
+
+    // Merge new data with existing
+    const merged = { ...existingParsed, ...req.body };
+
     const encrypted = CryptoJS.AES.encrypt(
-      JSON.stringify(req.body),
+      JSON.stringify(merged),
       DATA_SECRET
     ).toString();
 
@@ -317,30 +402,106 @@ app.post('/api/user-data', authMiddleware, async (req, res) => {
     );
 
     res.json({ ok: true });
-
   } catch (err) {
     console.error('User data save error:', err.message);
-    res.status(500).json({ error: 'Failed to save private data' });
+    res.status(500).json({ error: 'Failed to save data' });
   }
 });
 
 app.get('/api/user-data', authMiddleware, async (req, res) => {
   try {
     const record = await UserPrivateData.findOne({ userId: req.user.id });
-
-    if (!record)
-      return res.json({ data: null });
-
+    if (!record) return res.json({ data: null });
     const decrypted = CryptoJS.AES.decrypt(record.encryptedData, DATA_SECRET);
     const parsed = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
-
     res.json({ data: parsed });
-
   } catch (err) {
     console.error('User data fetch error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch private data' });
+    res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
+
+
+/* ================= INACTIVITY SETTINGS ================= */
+
+app.post('/api/inactivity-settings', authMiddleware, async (req, res) => {
+  try {
+    const { inactivityDays } = req.body;
+    if (!inactivityDays || inactivityDays < 1)
+      return res.status(400).json({ error: 'Please enter valid number of days' });
+    await InactivitySetting.findOneAndUpdate(
+      { userId: req.user.id },
+      { inactivityDays: parseInt(inactivityDays), lastSeen: new Date(), emailSent: false },
+      { upsert: true, new: true }
+    );
+    res.json({ ok: true, message: 'Inactivity timer set successfully' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save inactivity settings' });
+  }
+});
+
+app.get('/api/inactivity-settings', authMiddleware, async (req, res) => {
+  try {
+    const setting = await InactivitySetting.findOne({ userId: req.user.id });
+    res.json(setting || { inactivityDays: 30 });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch inactivity settings' });
+  }
+});
+
+
+/* ================= INACTIVITY CHECKER ================= */
+
+const checkInactivity = async () => {
+  try {
+    console.log('🔍 Running inactivity check...');
+    const allSettings = await InactivitySetting.find({ emailSent: false });
+
+    for (const setting of allSettings) {
+      const diffDays = Math.floor((new Date() - new Date(setting.lastSeen)) / (1000 * 60 * 60 * 24));
+
+      if (diffDays >= setting.inactivityDays) {
+        const user = await User.findById(setting.userId);
+        if (!user) continue;
+
+        const beneficiaries = await Beneficiary.find({ userId: setting.userId });
+        if (beneficiaries.length === 0) continue;
+
+        for (const b of beneficiaries) {
+          if (!b.email) continue;
+          await transporter.sendMail({
+            from: `"KeepLegacy" <${process.env.EMAIL_USER}>`,
+            to: b.email,
+            subject: `Important: ${user.name} has been inactive on KeepLegacy`,
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 30px; background: #f9fafb; border-radius: 12px;">
+                <div style="background: #1164e8; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 24px;">
+                  <h1 style="color: white; margin: 0;">KeepLegacy</h1>
+                </div>
+                <h2 style="color: #1164e8;">Inactivity Alert</h2>
+                <p>Dear <strong>${b.name}</strong>,</p>
+                <p><strong>${user.name}</strong> has been inactive on KeepLegacy for <strong>${diffDays} days</strong>.</p>
+                <p>As a trusted beneficiary, we kindly request that you check on them.</p>
+                <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                  <p style="margin: 0;"><strong>⚠️ Note:</strong> If ${user.name} is safe, they can log back into KeepLegacy to reset this timer.</p>
+                </div>
+                <p style="color: #666; font-size: 0.9rem;">This is an automated message from KeepLegacy.</p>
+              </div>
+            `
+          });
+          console.log(`✅ Email sent to: ${b.email}`);
+        }
+
+        await InactivitySetting.findByIdAndUpdate(setting._id, { emailSent: true });
+      }
+    }
+  } catch (err) {
+    console.error('❌ Inactivity check error:', err.message);
+  }
+};
+
+setInterval(checkInactivity, 24 * 60 * 60 * 1000);
+setTimeout(checkInactivity, 5000);
 
 
 /* ================= AI ROUTE ================= */
@@ -351,15 +512,11 @@ app.post('/api/ai-chat', authMiddleware, async (req, res) => {
   try {
     if (!process.env.GEMINI_API_KEY)
       return res.status(500).json({ error: 'Gemini API key not configured' });
-
     if (!req.body.message)
       return res.status(400).json({ error: 'Message is required' });
-
     const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const result = await model.generateContent(req.body.message);
-
     res.json({ response: result.response.text() });
-
   } catch (err) {
     console.error('AI chat error:', err.message);
     res.status(500).json({ error: 'AI request failed' });
