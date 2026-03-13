@@ -51,7 +51,7 @@ connectDB();
 /* ================= MULTER ================= */
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB limit
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
 
 /* ================= MODELS ================= */
@@ -87,27 +87,26 @@ const privateSchema = new mongoose.Schema({
 });
 const UserPrivateData = mongoose.models.UserPrivateData || mongoose.model('UserPrivateData', privateSchema);
 
+// ✅ FIXED: defaults are null so we know if user has actually set a timer
 const inactivitySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, unique: true },
-  inactivityDays: { type: Number, default: 30 },
-  inactivityMinutes: { type: Number, default: 43200 }, // ✅ default 30 days in minutes
+  inactivityDays: { type: Number, default: null },
+  inactivityMinutes: { type: Number, default: null },
   lastSeen: { type: Date, default: Date.now },
   emailSent: { type: Boolean, default: false }
 });
 const InactivitySetting = mongoose.models.InactivitySetting || mongoose.model('InactivitySetting', inactivitySchema);
 
-// ✅ NEW: MyFiles — stores files per user in MongoDB as base64
 const fileSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, required: true },
   name: String,
   type: String,
   size: Number,
-  data: String, // base64 encoded
+  data: String,
   uploadedAt: { type: Date, default: Date.now }
 });
 const UserFile = mongoose.models.UserFile || mongoose.model('UserFile', fileSchema);
 
-// ✅ NEW: PageActivity — tracks which pages each user has used
 const pageActivitySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, required: true },
   userName: String,
@@ -190,6 +189,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
 
+    // ✅ Only update lastSeen — do NOT overwrite inactivityMinutes on login
     await InactivitySetting.findOneAndUpdate(
       { userId: user._id },
       { lastSeen: new Date(), emailSent: false },
@@ -268,7 +268,7 @@ app.delete('/api/auth/delete-account', authMiddleware, async (req, res) => {
 app.get('/api/dashboard/summary', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
-    await trackPage(userId, 'Dashboard'); // ✅ track
+    await trackPage(userId, 'Dashboard');
     const [medicalInfoCount, beneficiariesCount, privateData] = await Promise.all([
       MedicalInfo.countDocuments({ userId }),
       Beneficiary.countDocuments({ userId }),
@@ -306,7 +306,7 @@ app.get('/api/dashboard/summary', authMiddleware, async (req, res) => {
 
 app.post('/api/medical-info', authMiddleware, upload.single('file'), async (req, res) => {
   try {
-    await trackPage(req.user.id, 'MedicalInfo'); // ✅ track
+    await trackPage(req.user.id, 'MedicalInfo');
     const record = new MedicalInfo({
       userId: req.user.id,
       doctorName: req.body.doctorName,
@@ -363,7 +363,7 @@ app.delete('/api/medical-info/:id', authMiddleware, async (req, res) => {
 
 app.post('/api/beneficiaries', authMiddleware, async (req, res) => {
   try {
-    await trackPage(req.user.id, 'Beneficiaries'); // ✅ track
+    await trackPage(req.user.id, 'Beneficiaries');
     const { name, relation, contact, email } = req.body;
     if (!name || !relation || !contact)
       return res.status(400).json({ error: 'Name, relation and contact are required' });
@@ -412,7 +412,6 @@ app.delete('/api/beneficiaries/:id', authMiddleware, async (req, res) => {
 
 app.post('/api/user-data', authMiddleware, async (req, res) => {
   try {
-    // ✅ Track which page is saving data
     const pageKey = Object.keys(req.body)[0];
     const pageMap = {
       bankAccounts: 'BankAccounts', insurance: 'Insurance', investments: 'Investments',
@@ -461,14 +460,12 @@ app.get('/api/user-data', authMiddleware, async (req, res) => {
 });
 
 
-/* ================= MY FILES — Persistent per user ================= */
+/* ================= MY FILES ================= */
 
-// ✅ Upload file — saved as base64 in MongoDB
 app.post('/api/my-files', authMiddleware, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    await trackPage(req.user.id, 'MyFiles'); // ✅ track
-
+    await trackPage(req.user.id, 'MyFiles');
     const base64 = req.file.buffer.toString('base64');
     const newFile = new UserFile({
       userId: req.user.id,
@@ -485,7 +482,6 @@ app.post('/api/my-files', authMiddleware, upload.single('file'), async (req, res
   }
 });
 
-// ✅ Get all files for user (metadata only, no base64 in list)
 app.get('/api/my-files', authMiddleware, async (req, res) => {
   try {
     const files = await UserFile.find({ userId: req.user.id }).select('-data');
@@ -495,7 +491,6 @@ app.get('/api/my-files', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Download/view a single file
 app.get('/api/my-files/:id', authMiddleware, async (req, res) => {
   try {
     const file = await UserFile.findOne({ _id: req.params.id, userId: req.user.id });
@@ -509,7 +504,6 @@ app.get('/api/my-files/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Delete a file
 app.delete('/api/my-files/:id', authMiddleware, async (req, res) => {
   try {
     await UserFile.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
@@ -547,16 +541,20 @@ app.post('/api/inactivity-settings', authMiddleware, async (req, res) => {
   }
 });
 
+// ✅ FIXED: returns null when user hasn't set a timer yet
 app.get('/api/inactivity-settings', authMiddleware, async (req, res) => {
   try {
     const setting = await InactivitySetting.findOne({ userId: req.user.id });
-    res.json(setting || { inactivityDays: 30, inactivityMinutes: 43200 });
+    // ✅ If no setting or inactivityMinutes is null — user hasn't set timer
+    if (!setting || setting.inactivityMinutes === null) {
+      return res.json({ inactivityDays: null, inactivityMinutes: null });
+    }
+    res.json(setting);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch inactivity settings' });
   }
 });
 
-// ✅ Trigger email immediately when frontend timer ends
 app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -602,11 +600,15 @@ app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, r
 const checkInactivity = async () => {
   try {
     console.log('🔍 Running inactivity check...');
-    const allSettings = await InactivitySetting.find({ emailSent: false });
+    // ✅ Only check users who have actually set a timer (inactivityMinutes not null)
+    const allSettings = await InactivitySetting.find({
+      emailSent: false,
+      inactivityMinutes: { $ne: null, $gt: 0 }
+    });
 
     for (const setting of allSettings) {
       const diffMinutes = Math.floor((new Date() - new Date(setting.lastSeen)) / (1000 * 60));
-      const thresholdMinutes = setting.inactivityMinutes || setting.inactivityDays * 24 * 60;
+      const thresholdMinutes = setting.inactivityMinutes;
 
       if (diffMinutes >= thresholdMinutes) {
         const user = await User.findById(setting.userId);
