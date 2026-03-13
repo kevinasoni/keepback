@@ -7,8 +7,6 @@ const CryptoJS = require('crypto-js');
 const multer = require('multer');
 require('dotenv').config();
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-
 const app = express();
 
 const PORT = process.env.PORT || 5000;
@@ -130,7 +128,7 @@ const authMiddleware = (req, res, next) => {
 };
 
 
-/* ================= EMAIL — Brevo HTTP API (no SMTP, works on Render free tier) ================= */
+/* ================= EMAIL — Brevo HTTP API ================= */
 
 const sendEmail = async ({ to, subject, html }) => {
   const toList = Array.isArray(to)
@@ -194,7 +192,6 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -205,20 +202,17 @@ app.post('/api/auth/login', async (req, res) => {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
-
     await InactivitySetting.findOneAndUpdate(
       { userId: user._id },
       { lastSeen: new Date(), emailSent: false },
       { upsert: true }
     );
-
     res.json({ token });
   } catch (err) {
     console.error('Login error:', err.message);
     res.status(500).json({ error: 'Login failed' });
   }
 });
-
 
 app.get('/api/auth/profile', authMiddleware, async (req, res) => {
   try {
@@ -230,7 +224,6 @@ app.get('/api/auth/profile', authMiddleware, async (req, res) => {
   }
 });
 
-
 app.put('/api/auth/profile', authMiddleware, async (req, res) => {
   try {
     const { name } = req.body;
@@ -241,7 +234,6 @@ app.put('/api/auth/profile', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
-
 
 app.put('/api/auth/change-password', authMiddleware, async (req, res) => {
   try {
@@ -258,7 +250,6 @@ app.put('/api/auth/change-password', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
-
 
 app.delete('/api/auth/delete-account', authMiddleware, async (req, res) => {
   try {
@@ -348,15 +339,10 @@ app.get('/api/medical-info', authMiddleware, async (req, res) => {
 
 app.put('/api/medical-info/:id', authMiddleware, upload.single('file'), async (req, res) => {
   try {
-    const update = {
-      doctorName: req.body.doctorName,
-      prescriptions: req.body.prescriptions,
-    };
+    const update = { doctorName: req.body.doctorName, prescriptions: req.body.prescriptions };
     if (req.file) update.medicalReport = req.file.originalname;
     const updated = await MedicalInfo.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user.id },
-      update,
-      { new: true }
+      { _id: req.params.id, userId: req.user.id }, update, { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Record not found' });
     res.json(updated);
@@ -436,7 +422,6 @@ app.post('/api/user-data', authMiddleware, async (req, res) => {
       consolidatedPortfolio: 'ConsolidatedPortfolio'
     };
     if (pageKey && pageMap[pageKey]) await trackPage(req.user.id, pageMap[pageKey]);
-
     const existing = await UserPrivateData.findOne({ userId: req.user.id });
     let existingParsed = {};
     if (existing?.encryptedData) {
@@ -445,16 +430,13 @@ app.post('/api/user-data', authMiddleware, async (req, res) => {
         existingParsed = JSON.parse(dec.toString(CryptoJS.enc.Utf8));
       } catch { existingParsed = {}; }
     }
-
     const merged = { ...existingParsed, ...req.body };
     const encrypted = CryptoJS.AES.encrypt(JSON.stringify(merged), DATA_SECRET).toString();
-
     await UserPrivateData.findOneAndUpdate(
       { userId: req.user.id },
       { encryptedData: encrypted },
       { upsert: true, new: true }
     );
-
     res.json({ ok: true });
   } catch (err) {
     console.error('User data save error:', err.message);
@@ -540,7 +522,6 @@ app.post('/api/inactivity-settings', authMiddleware, async (req, res) => {
     }
     if (!totalMinutes || totalMinutes < 1)
       return res.status(400).json({ error: 'Minimum timer is 1 minute' });
-
     await InactivitySetting.findOneAndUpdate(
       { userId: req.user.id },
       {
@@ -573,12 +554,9 @@ app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, r
   try {
     const user = await User.findById(req.user.id);
     const beneficiaries = await Beneficiary.find({ userId: req.user.id, email: { $exists: true, $ne: '' } });
-
     if (!beneficiaries.length)
       return res.json({ ok: true, message: 'No beneficiaries with email' });
-
     const emailList = beneficiaries.map(b => b.email);
-
     await sendEmail({
       to: emailList,
       subject: `Inactivity Alert: ${user.name || 'Your loved one'} may need your attention`,
@@ -598,7 +576,6 @@ app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, r
         </div>
       `
     });
-
     await InactivitySetting.findOneAndUpdate({ userId: req.user.id }, { emailSent: true });
     res.json({ ok: true });
   } catch (err) {
@@ -617,18 +594,13 @@ const checkInactivity = async () => {
       emailSent: false,
       inactivityMinutes: { $ne: null, $gt: 0 }
     });
-
     for (const setting of allSettings) {
       const diffMinutes = Math.floor((new Date() - new Date(setting.lastSeen)) / (1000 * 60));
-      const thresholdMinutes = setting.inactivityMinutes;
-
-      if (diffMinutes >= thresholdMinutes) {
+      if (diffMinutes >= setting.inactivityMinutes) {
         const user = await User.findById(setting.userId);
         if (!user) continue;
-
         const beneficiaries = await Beneficiary.find({ userId: setting.userId });
-        if (beneficiaries.length === 0) continue;
-
+        if (!beneficiaries.length) continue;
         for (const b of beneficiaries) {
           if (!b.email) continue;
           await sendEmail({
@@ -652,7 +624,6 @@ const checkInactivity = async () => {
           });
           console.log(`✅ Email sent to: ${b.email}`);
         }
-
         await InactivitySetting.findByIdAndUpdate(setting._id, { emailSent: true });
       }
     }
@@ -665,9 +636,7 @@ setInterval(checkInactivity, 24 * 60 * 60 * 1000);
 setTimeout(checkInactivity, 5000);
 
 
-/* ================= AI ROUTE ================= */
-
-const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+/* ================= AI ROUTE — Gemini REST API ================= */
 
 app.post('/api/ai-chat', authMiddleware, async (req, res) => {
   try {
@@ -675,12 +644,33 @@ app.post('/api/ai-chat', authMiddleware, async (req, res) => {
       return res.status(500).json({ error: 'Gemini API key not configured' });
     if (!req.body.message)
       return res.status(400).json({ error: 'Message is required' });
-    const model = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(req.body.message);
-    res.json({ response: result.response.text() });
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: req.body.message }] }]
+        })
+      }
+    );
+
+    const data = await geminiRes.json();
+    console.log('Gemini raw response:', JSON.stringify(data));
+
+    if (!geminiRes.ok) {
+      console.error('Gemini error:', data?.error?.message);
+      return res.status(500).json({ error: data?.error?.message || 'Gemini request failed' });
+    }
+
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return res.status(500).json({ error: 'No response from Gemini' });
+
+    res.json({ response: text });
   } catch (err) {
     console.error('AI chat error:', err.message);
-    res.status(500).json({ error: 'AI request failed' });
+    res.status(500).json({ error: err.message });
   }
 });
 
