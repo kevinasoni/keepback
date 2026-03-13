@@ -87,7 +87,6 @@ const privateSchema = new mongoose.Schema({
 });
 const UserPrivateData = mongoose.models.UserPrivateData || mongoose.model('UserPrivateData', privateSchema);
 
-// ✅ FIXED: defaults are null so we know if user has actually set a timer
 const inactivitySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, unique: true },
   inactivityDays: { type: Number, default: null },
@@ -132,15 +131,15 @@ const authMiddleware = (req, res, next) => {
 };
 
 
-/* ================= EMAIL ================= */
+/* ================= EMAIL — Brevo SMTP (works on Render free tier) ================= */
 
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // ✅ use SSL instead of TLS
+  host: 'smtp-relay.brevo.com',
+  port: 587,
+  secure: false,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+    user: process.env.BREVO_USER,
+    pass: process.env.BREVO_PASS
   }
 });
 
@@ -191,7 +190,6 @@ app.post('/api/auth/login', async (req, res) => {
     if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
 
-    // ✅ Only update lastSeen — do NOT overwrite inactivityMinutes on login
     await InactivitySetting.findOneAndUpdate(
       { userId: user._id },
       { lastSeen: new Date(), emailSent: false },
@@ -543,11 +541,9 @@ app.post('/api/inactivity-settings', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ FIXED: returns null when user hasn't set a timer yet
 app.get('/api/inactivity-settings', authMiddleware, async (req, res) => {
   try {
     const setting = await InactivitySetting.findOne({ userId: req.user.id });
-    // ✅ If no setting or inactivityMinutes is null — user hasn't set timer
     if (!setting || setting.inactivityMinutes === null) {
       return res.json({ inactivityDays: null, inactivityMinutes: null });
     }
@@ -568,7 +564,7 @@ app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, r
     const emailList = beneficiaries.map(b => b.email);
 
     await transporter.sendMail({
-      from: `"KeepLegacy" <${process.env.EMAIL_USER}>`,
+      from: `"KeepLegacy" <${process.env.BREVO_USER}>`,
       to: emailList.join(','),
       subject: `Inactivity Alert: ${user.name || 'Your loved one'} may need your attention`,
       html: `
@@ -602,7 +598,6 @@ app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, r
 const checkInactivity = async () => {
   try {
     console.log('🔍 Running inactivity check...');
-    // ✅ Only check users who have actually set a timer (inactivityMinutes not null)
     const allSettings = await InactivitySetting.find({
       emailSent: false,
       inactivityMinutes: { $ne: null, $gt: 0 }
@@ -622,7 +617,7 @@ const checkInactivity = async () => {
         for (const b of beneficiaries) {
           if (!b.email) continue;
           await transporter.sendMail({
-            from: `"KeepLegacy" <${process.env.EMAIL_USER}>`,
+            from: `"KeepLegacy" <${process.env.BREVO_USER}>`,
             to: b.email,
             subject: `Important: ${user.name} has been inactive on KeepLegacy`,
             html: `
@@ -682,20 +677,22 @@ app.get('/', (req, res) => {
   res.json({ status: '✅ KeepLegacy API is running' });
 });
 
-// ✅ TEMPORARY: test email route — remove after testing
+/* ================= TEST EMAIL ROUTE ================= */
+
 app.get('/api/test-email', async (req, res) => {
   try {
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_USER,
+      from: `"KeepLegacy" <${process.env.BREVO_USER}>`,
+      to: process.env.BREVO_USER,
       subject: 'KeepLegacy Email Test',
-      text: 'If you see this, email is working!'
+      text: 'If you see this, email is working via Brevo!'
     });
     res.json({ ok: true, message: '✅ Email sent! Check your inbox.' });
   } catch (err) {
     res.json({ ok: false, error: err.message });
   }
 });
+
 
 /* ================= 404 HANDLER ================= */
 
