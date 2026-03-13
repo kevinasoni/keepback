@@ -682,6 +682,20 @@ app.get('/', (req, res) => {
   res.json({ status: '✅ KeepLegacy API is running' });
 });
 
+// ✅ TEMPORARY: test email route — remove after testing
+app.get('/api/test-email', async (req, res) => {
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER,
+      subject: 'KeepLegacy Email Test',
+      text: 'If you see this, email is working!'
+    });
+    res.json({ ok: true, message: '✅ Email sent! Check your inbox.' });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
 
 /* ================= 404 HANDLER ================= */
 
