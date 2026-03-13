@@ -135,7 +135,9 @@ const authMiddleware = (req, res, next) => {
 /* ================= EMAIL ================= */
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // ✅ use SSL instead of TLS
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
@@ -664,7 +666,7 @@ app.post('/api/ai-chat', authMiddleware, async (req, res) => {
       return res.status(500).json({ error: 'Gemini API key not configured' });
     if (!req.body.message)
       return res.status(400).json({ error: 'Message is required' });
-    const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
     const result = await model.generateContent(req.body.message);
     res.json({ response: result.response.text() });
   } catch (err) {
