@@ -4,7 +4,6 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const CryptoJS = require('crypto-js');
-const nodemailer = require('nodemailer');
 const multer = require('multer');
 require('dotenv').config();
 
@@ -131,17 +130,34 @@ const authMiddleware = (req, res, next) => {
 };
 
 
-/* ================= EMAIL — Brevo SMTP (works on Render free tier) ================= */
+/* ================= EMAIL — Brevo HTTP API (no SMTP, works on Render free tier) ================= */
 
-const transporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.BREVO_USER,
-    pass: process.env.BREVO_PASS
+const sendEmail = async ({ to, subject, html }) => {
+  const toList = Array.isArray(to)
+    ? to.map(email => ({ email }))
+    : [{ email: to }];
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api-key': process.env.BREVO_API_KEY
+    },
+    body: JSON.stringify({
+      sender: { name: 'KeepLegacy', email: process.env.BREVO_USER },
+      to: toList,
+      subject,
+      htmlContent: html
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Brevo API error: ${err}`);
   }
-});
+
+  return response.json();
+};
 
 
 /* ================= HELPER: Track Page Activity ================= */
@@ -563,9 +579,8 @@ app.post('/api/inactivity-settings/trigger-email', authMiddleware, async (req, r
 
     const emailList = beneficiaries.map(b => b.email);
 
-    await transporter.sendMail({
-      from: `"KeepLegacy" <${process.env.BREVO_USER}>`,
-      to: emailList.join(','),
+    await sendEmail({
+      to: emailList,
       subject: `Inactivity Alert: ${user.name || 'Your loved one'} may need your attention`,
       html: `
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:30px;background:#f9fafb;border-radius:12px;">
@@ -616,9 +631,8 @@ const checkInactivity = async () => {
 
         for (const b of beneficiaries) {
           if (!b.email) continue;
-          await transporter.sendMail({
-            from: `"KeepLegacy" <${process.env.BREVO_USER}>`,
-            to: b.email,
+          await sendEmail({
+            to: [b.email],
             subject: `Important: ${user.name} has been inactive on KeepLegacy`,
             html: `
               <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:30px;background:#f9fafb;border-radius:12px;">
@@ -677,15 +691,15 @@ app.get('/', (req, res) => {
   res.json({ status: '✅ KeepLegacy API is running' });
 });
 
+
 /* ================= TEST EMAIL ROUTE ================= */
 
 app.get('/api/test-email', async (req, res) => {
   try {
-    await transporter.sendMail({
-      from: `"KeepLegacy" <${process.env.BREVO_USER}>`,
-      to: process.env.BREVO_USER,
+    await sendEmail({
+      to: [process.env.BREVO_USER],
       subject: 'KeepLegacy Email Test',
-      text: 'If you see this, email is working via Brevo!'
+      html: '<p>If you see this, <strong>email is working via Brevo HTTP API!</strong> 🎉</p>'
     });
     res.json({ ok: true, message: '✅ Email sent! Check your inbox.' });
   } catch (err) {
