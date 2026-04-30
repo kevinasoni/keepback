@@ -636,49 +636,45 @@ setInterval(checkInactivity, 24 * 60 * 60 * 1000);
 setTimeout(checkInactivity, 5000);
 
 
-/* ================= AI ROUTE — Gemini REST API ================= */
+/* ================= AI ROUTE — GROQ (FREE & FAST) ================= */
+
+const OpenAI = require("openai");
+
+const groq = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: "https://api.groq.com/openai/v1",
+});
 
 app.post('/api/ai-chat', authMiddleware, async (req, res) => {
   try {
-    if (!process.env.GEMINI_API_KEY)
-      return res.status(500).json({ error: 'Gemini API key not configured' });
-    if (!req.body.message)
-      return res.status(400).json({ error: 'Message is required' });
+    const { message } = req.body;
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: req.body.message }] }]
-        })
-      }
-    );
-
-    const data = await geminiRes.json();
-    console.log('Gemini raw response:', JSON.stringify(data));
-
-    if (!geminiRes.ok) {
-      console.error('Gemini error:', data?.error?.message);
-      return res.status(500).json({ error: data?.error?.message || 'Gemini request failed' });
+    if (!message) {
+      return res.status(400).json({ error: "Message is required" });
     }
 
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return res.status(500).json({ error: 'No response from Gemini' });
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "system",
+          content: "You are a smart financial and legacy planning advisor.",
+        },
+        {
+          role: "user",
+          content: message,
+        },
+      ],
+    });
 
-    res.json({ response: text });
+    const reply = completion.choices[0].message.content;
+
+    res.json({ response: reply });
+
   } catch (err) {
-    console.error('AI chat error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error("AI ERROR:", err.message);
+    res.status(500).json({ error: "AI failed" });
   }
-});
-
-
-/* ================= HEALTH CHECK ================= */
-
-app.get('/', (req, res) => {
-  res.json({ status: '✅ KeepLegacy API is running' });
 });
 
 
